@@ -2,7 +2,7 @@
 Summary AI 观影报告数据模型。
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -16,10 +16,17 @@ class LLMConfigResponse(BaseModel):
     max_tokens: int = 2000
     temperature: float = 0.7
     timeout: int = 60
+    provider: str = "openai_compat"
+    thinking_level: str = "off"
 
 
 class LLMConfigUpdate(BaseModel):
-    """PUT /llm 请求"""
+    """PUT /llm 请求
+
+    provider / thinking_level 为受控枚举：在 API 边界用 Literal 收口，
+    非法值直接 422，避免脏值写入配置后在运行时才暴露（如未知 provider
+    延迟到客户端构建才抛错、未知 thinking_level 被静默降级为 off）。
+    """
 
     api_base: Optional[str] = None
     api_key: Optional[str] = None
@@ -27,6 +34,8 @@ class LLMConfigUpdate(BaseModel):
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
     timeout: Optional[int] = None
+    provider: Optional[Literal["openai_compat", "anthropic_compat"]] = None
+    thinking_level: Optional[Literal["off", "low", "medium", "high"]] = None
 
 
 class LLMTestResponse(BaseModel):
