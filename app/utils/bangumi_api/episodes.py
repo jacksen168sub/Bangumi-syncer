@@ -20,6 +20,7 @@ from ...utils.bangumi_constants import (
     SUBJECT_TYPE_ANIME,
     SUBJECT_TYPE_REAL,
 )
+from ...utils.season_title import extract_explicit_season
 from ...utils.text_constants import CN_NUM
 
 # 关联类型中文名（由 ID 常量推导，避免硬编码字符串）
@@ -650,8 +651,9 @@ class EpisodesMixin:
         subject_id: int,
         target_ep: int,
         max_depth: int = 20,
+        target_season: int = 1,
     ) -> tuple[int, int] | None:
-        """在当前条目及其前传/续集链中查找含 sort=target_ep 的章节。
+        """在当前条目及其前传/续集链中查找目标章节（target_season>1 时优先按季定位，否则按全局 sort 解析）。
 
         场景：fongmi 解析出连续编号 episode=102，但已命中的 subject（如第六季）
         的 sort 范围是 235-286，不含 102。需通过前传链向前找到含 sort=102 的
@@ -662,8 +664,10 @@ class EpisodesMixin:
 
         Args:
             subject_id: 已命中的初始条目 id
-            target_ep: 目标集数（连续编号，对应 ep.sort）
+            target_ep: 目标集数（季内集编号，对应 ep.ep；target_season<=1 时回退为全局 sort）
             max_depth: 沿单方向最多遍历多少个关联条目，防极端环
+            target_season: 目标季编号；大于 1 时优先按季在关联链上定位目标条目，
+                再按集解析，避免命中错误季
 
         Returns:
             (subject_id, episode_id) 或 None
@@ -677,6 +681,16 @@ class EpisodesMixin:
         # 整体 deadline：链式 API 调用累计耗时超过 60s 立即放弃
         # （防御错误 subject_id 触发的长链遍历占用 sync 线程池）
         deadline = time.monotonic() + _CROSS_SEASON_DEADLINE_SECONDS
+
+        # 季定位优先：明确指定季时，先按季在关联链上定位目标条目，再按集解析，
+        # 避免仅凭全局 sort 命中错误季（例如第 4 季第 13 集误命中第 1 季第 13 集）。
+        if target_season and target_season > 1:
+            season_pick = self._resolve_by_season_chain(
+                subject_id, target_season, target_ep, max_depth, deadline
+            )
+            if season_pick:
+                self.last_cross_season_path = "chain"
+                return season_pick
 
         # 先在当前 subject 内查
         found = self._find_episode_by_sort(subject_id, target_ep)
@@ -739,6 +753,109 @@ class EpisodesMixin:
         if franchise_result:
             return franchise_result
         return None
+
+    def _resolve_by_season_chain(
+        self,
+        subject_id: int,
+        target_season: int,
+        target_ep: int,
+        max_depth: int,
+        deadline: float | None = None,
+    ) -> tuple[int, int] | None:
+        """按季在关联链上定位目标条目并解析集数。
+
+        调用方明确提供季编号（target_season>1）时，依据各条目标题中的季声明在
+        整条前传/续集链上定位目标季的条目（分篇 cours 视为同一季的连续段），再按
+        集号在目标季内解析，从而命中用户所指的具体季与集。
+
+        无法在关联链上确定目标季，或目标季内找不到对应集时返回 None，
+        交由本方法的全局 sort 回退逻辑处理（保持既有行为不变）。
+        """
+        chain = self._collect_related_subjects(subject_id, max_depth, deadline)
+        if not chain:
+            return None
+
+        # 收集关联链上每个条目的季编号与正片章节，按链序排列
+        season_buckets: list[tuple[int | None, int, list[dict]]] = []
+        for sid in chain:
+            if deadline is not None and time.monotonic() > deadline:
+                break
+            info = self.get_subject(sid)
+            if not info:
+                continue
+            subject_type = info.get("type")
+            if subject_type is not None and subject_type != SUBJECT_TYPE_ANIME:
+                continue
+            season = extract_explicit_season(
+                info.get("name_cn") or ""
+            ) or extract_explicit_season(info.get("name") or "")
+            episodes = self.get_episodes(sid, fetch_all=True).get("data") or []
+            type0 = [e for e in episodes if e.get("type", 0) == 0]
+            season_buckets.append((season, sid, type0))
+
+        # 仅保留目标季的连续段，按链序累计集数定位目标集
+        targets = [
+            (sid, eps)
+            for (season, sid, eps) in season_buckets
+            if season == target_season
+        ]
+        if not targets:
+            return None
+
+        cumulative = 0
+        for sid, eps in targets:
+            count = len(eps)
+            if cumulative < target_ep <= cumulative + count:
+                local_ep = target_ep - cumulative
+                rows = [e for e in eps if e.get("ep") == local_ep]
+                if rows:
+                    return sid, rows[0]["id"]
+            cumulative += count
+        return None
+
+    def _collect_related_subjects(
+        self,
+        subject_id: int,
+        max_depth: int,
+        deadline: float | None = None,
+    ) -> list[int]:
+        """按时间顺序收集关联链条目（前传在前、起始居中、续集在后）。
+
+        续集方向优先使用 Archive 续集链短路，未命中时降级逐跳；前传方向使用
+        search_previous_subjects（由近到远），反转后置于起始条目之前以形成时间序。
+        """
+        chain: list[int] = [subject_id]
+        visited: set[int] = {subject_id}
+
+        # 续集方向（由近到远追加在起始之后）
+        shortcut = self._archive.try_find_sequel_chain(subject_id, max_hops=max_depth)
+        if shortcut.hit and shortcut.data:
+            for sid in shortcut.data:
+                if sid and sid not in visited:
+                    visited.add(sid)
+                    chain.append(sid)
+        else:
+            current_id = subject_id
+            for _ in range(max_depth):
+                if deadline is not None and time.monotonic() > deadline:
+                    break
+                next_id = self._find_related_id_by_relation(
+                    current_id, _RELATION_CN_SEQUEL
+                )
+                if not next_id or next_id in visited:
+                    break
+                visited.add(next_id)
+                chain.append(next_id)
+                current_id = next_id
+
+        # 前传方向（由近到远），反转后置于起始之前形成时间序
+        prequels = self.search_previous_subjects(subject_id, max_hops=max_depth) or []
+        prefixed: list[int] = []
+        for sid in reversed(prequels):
+            if sid and sid not in visited:
+                visited.add(sid)
+                prefixed.append(sid)
+        return prefixed + chain
 
     def _try_find_episode_in_franchise(
         self,

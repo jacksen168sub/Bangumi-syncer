@@ -2,10 +2,14 @@
 Bangumi API 完整测试
 """
 
+from __future__ import annotations
+
 from typing import Optional
 from unittest.mock import MagicMock
 
 from app.utils.bangumi_api import BangumiApi
+from app.utils.bangumi_api._archive_shortcut import ShortcutResult
+from app.utils.season_title import extract_explicit_season
 
 
 class TestGetTargetSeasonEpisodeIdAirdate:
@@ -1178,6 +1182,265 @@ class TestFindEpisodeAcrossSeasons:
         )
         assert sid == 2
         assert eid == 2002  # sort 27 -> id 2000 + (27 - 25)
+
+
+# find_episode_across_seasons 的 target_season 季定位分支测试
+# （避免仅凭全局 sort 命中最先含该 sort 的错误季，如 S04E13 误命中 S1E13）
+
+
+def _make_eps_by_ep(
+    start_ep: int, count: int, start_id: int, start_sort: int | None = None
+):
+    """生成单 cour 的 episode 列表（type=0）。"""
+    eps = []
+    for i in range(count):
+        ep = start_ep + i
+        sort = start_sort + i if start_sort is not None else ep
+        eps.append(
+            {
+                "sort": sort,
+                "ep": ep,
+                "id": start_id + i,
+                "type": 0,
+                "airdate": "",
+            }
+        )
+    return eps
+
+
+def build_api_with_chain(subjects, episodes, sequel_chain, prequel_chain=None):
+    """构造 mock 好的 BangumiApi，用预设关联链 + 条目/章节数据驱动季定位逻辑。
+
+    subjects: {sid: {"name","name_cn","type"}}
+    episodes: {sid: [ep dict]}
+    sequel_chain / prequel_chain: subject id 列表（由近到远）
+    """
+    api = BangumiApi()
+
+    def get_subject(sid):
+        return subjects.get(int(sid))
+
+    def get_episodes(sid, *args, **kwargs):
+        data = episodes.get(int(sid), [])
+        return {"data": data, "total": len(data)}
+
+    api.get_subject = MagicMock(side_effect=get_subject)
+    api.get_episodes = MagicMock(side_effect=get_episodes)
+    api._fetch_episodes_page = MagicMock(return_value={"data": [], "total": 0})
+    api._archive = MagicMock()
+    api._archive.try_find_sequel_chain = MagicMock(
+        return_value=ShortcutResult(True, sequel_chain or [], "archive_hit")
+    )
+    api.search_previous_subjects = MagicMock(return_value=prequel_chain or [])
+    return api
+
+
+class TestExtractExplicitSeason:
+    """extract_explicit_season 纯函数：从标题提取明确声明的季度编号。"""
+
+    def test_rezero_season_titles(self):
+        # 各 cour 标题均携带「第X季」，应解析出对应季编号
+        assert extract_explicit_season("Re：从零开始的异世界生活") is None
+        assert extract_explicit_season("Re：从零开始的异世界生活 第二季") == 2
+        assert extract_explicit_season("Re：从零开始的异世界生活 第二季 后半") == 2
+        assert extract_explicit_season("Re：从零开始的异世界生活 第三季 袭击篇") == 3
+        assert extract_explicit_season("Re：从零开始的异世界生活 第三季 反击篇") == 3
+        assert extract_explicit_season("Re：从零开始的异世界生活 第四季 失坠篇") == 4
+        assert extract_explicit_season("Re：从零开始的异世界生活 第四季 夺还篇") == 4
+
+    def test_chinese_and_arabic_season_keywords(self):
+        assert extract_explicit_season("进击的巨人 第四季") == 4
+        assert extract_explicit_season("进击の巨人 第四期") == 4
+        assert extract_explicit_season("第12期") == 12
+        assert extract_explicit_season("第2季") == 2
+        assert extract_explicit_season("某番剧 第十一季") == 11
+
+    def test_english_season_keywords(self):
+        assert extract_explicit_season("Attack on Titan Season 4") == 4
+        assert extract_explicit_season("Anime 2nd season") == 2
+        assert extract_explicit_season("Anime Season 3") == 3
+
+    def test_no_season_declaration(self):
+        # 无季声明（第一季本体 / 总集篇 / 续章）应返回 None
+        assert extract_explicit_season("虫师 续章") is None
+        assert extract_explicit_season("凡人修仙传") is None
+        assert extract_explicit_season("") is None
+
+
+class TestFindEpisodeAcrossSeasonsBySeason:
+    """find_episode_across_seasons 季定位分支：Re:Zero 多 cour 跨季场景。"""
+
+    @staticmethod
+    def _rezero_subjects():
+        base = "Re：从零开始的异世界生活"
+        return {
+            140001: {"name": base, "name_cn": base, "type": 2},
+            278826: {"name": f"{base} 第二季", "name_cn": f"{base} 第二季", "type": 2},
+            316247: {
+                "name": f"{base} 第二季 后半",
+                "name_cn": f"{base} 第二季 后半",
+                "type": 2,
+            },
+            425998: {
+                "name": f"{base} 第三季 袭击篇",
+                "name_cn": f"{base} 第三季 袭击篇",
+                "type": 2,
+            },
+            510728: {
+                "name": f"{base} 第三季 反击篇",
+                "name_cn": f"{base} 第三季 反击篇",
+                "type": 2,
+            },
+            547888: {
+                "name": f"{base} 第四季 失坠篇",
+                "name_cn": f"{base} 第四季 失坠篇",
+                "type": 2,
+            },
+            633836: {
+                "name": f"{base} 第四季 夺还篇",
+                "name_cn": f"{base} 第四季 夺还篇",
+                "type": 2,
+            },
+        }
+
+    @staticmethod
+    def _rezero_episodes():
+        # 每 cour 11 集；S1 25 集；ep13 真实 id = 626044，S4 第二 cour ep2 真实 id = 1656859
+        return {
+            140001: _make_eps_by_ep(1, 25, 626032, start_sort=1),
+            278826: _make_eps_by_ep(1, 11, 278000),
+            316247: _make_eps_by_ep(1, 11, 316000),
+            425998: _make_eps_by_ep(1, 11, 425000),
+            510728: _make_eps_by_ep(1, 11, 510000),
+            547888: _make_eps_by_ep(1, 11, 547000),
+            633836: _make_eps_by_ep(1, 11, 1656858),
+        }
+
+    @classmethod
+    def _rezero_api(cls):
+        return build_api_with_chain(
+            cls._rezero_subjects(),
+            cls._rezero_episodes(),
+            sequel_chain=[278826, 316247, 425998, 510728, 547888, 633836],
+            prequel_chain=[],
+        )
+
+    def test_rezero_s04e13_resolves_to_season4_cour2(self):
+        """分支结果：S04E13 应定位到第四季第二 cour 的 ep2（id 1656859），而非 S1E13。"""
+        api = self._rezero_api()
+        result = api.find_episode_across_seasons(140001, 13, target_season=4)
+        assert result is not None
+        assert result[0] == 633836
+        assert result[1] == 1656859
+
+    def test_rezero_s04e13_without_season_falls_back_to_global_sort(self):
+        """上游结果：未传入季编号时回退全局 sort，S04E13 命中 S1E13（id 626044）。
+
+        这正是 bug 触发路径——证明修复仅在调用方传入季编号时生效，
+        未传季编号时保持既有（有误）行为不变。
+        """
+        api = self._rezero_api()
+        result = api.find_episode_across_seasons(140001, 13)
+        assert result is not None
+        assert result[0] == 140001
+        assert result[1] == 626044
+
+    def test_rezero_s04e01_resolves_to_season4_cour1(self):
+        """S04E01 应定位到第四季第一 cour（547888）的 ep1。"""
+        api = self._rezero_api()
+        result = api.find_episode_across_seasons(140001, 1, target_season=4)
+        assert result is not None
+        assert result[0] == 547888
+
+    def test_target_season_one_skips_season_resolver(self):
+        """常规：target_season<=1 时不应进入季定位快路径，直接走全局 sort。"""
+        api = self._rezero_api()
+        original = api._resolve_by_season_chain
+        api._resolve_by_season_chain = MagicMock(wraps=original)
+        result = api.find_episode_across_seasons(140001, 13, target_season=1)
+        api._resolve_by_season_chain.assert_not_called()
+        assert result == (140001, 626044)
+
+    def test_single_subject_season1_uses_global_sort_unchanged(self):
+        """常规/零回归：单 subject 季=1 走全局 sort 原路径，结果不变。"""
+        subjects = {100: {"name": "某番剧", "name_cn": "某番剧", "type": 2}}
+        episodes = {100: _make_eps_by_ep(1, 13, 10000, start_sort=1)}
+        api = build_api_with_chain(
+            subjects, episodes, sequel_chain=[], prequel_chain=[]
+        )
+        result = api.find_episode_across_seasons(100, 5)
+        assert result == (100, 10004)
+
+    def test_resolve_by_season_chain_returns_none_when_season_absent(self):
+        """边缘：关联链上不存在目标季时，季定位分支返回 None（交由全局 sort 处理）。"""
+        subjects = {
+            100: {"name": "某番剧", "name_cn": "某番剧", "type": 2},
+            200: {"name": "某番剧 第二季", "name_cn": "某番剧 第二季", "type": 2},
+            300: {"name": "某番剧 第三季", "name_cn": "某番剧 第三季", "type": 2},
+        }
+        episodes = {
+            100: _make_eps_by_ep(1, 11, 10000),
+            200: _make_eps_by_ep(1, 11, 20000),
+            300: _make_eps_by_ep(1, 11, 30000),
+        }
+        api = build_api_with_chain(
+            subjects, episodes, sequel_chain=[200, 300], prequel_chain=[]
+        )
+        # 关联链仅到第 3 季，要求第 4 季 → 季定位 miss
+        result = api._resolve_by_season_chain(100, 4, 13, 20)
+        assert result is None
+
+    def test_season_unparseable_title_falls_back_to_global_sort(self):
+        """边缘：链上标题均无法解析季编号时，季定位 miss，回退全局 sort。"""
+        subjects = {
+            100: {"name": "某番剧", "name_cn": "某番剧", "type": 2},
+            200: {"name": "某番剧 续章", "name_cn": "某番剧 续章", "type": 2},
+        }
+        episodes = {
+            100: _make_eps_by_ep(1, 13, 10000, start_sort=1),
+            200: _make_eps_by_ep(1, 13, 20000, start_sort=1),
+        }
+        api = build_api_with_chain(
+            subjects, episodes, sequel_chain=[200], prequel_chain=[]
+        )
+        # 标题无季声明，季定位无法命中，回退到 S1 的全局 sort
+        result = api.find_episode_across_seasons(100, 13, target_season=2)
+        assert result == (100, 10012)
+
+    def test_cross_cour_same_season_cumulative(self):
+        """边缘：同季多 cour 累计定位。S2 分两 cour（各 12 集），ep=20 应落在第二 cour ep8。"""
+        subjects = {
+            100: {"name": "某番剧", "name_cn": "某番剧", "type": 2},
+            200: {"name": "某番剧 第二季", "name_cn": "某番剧 第二季", "type": 2},
+            210: {
+                "name": "某番剧 第二季 后半",
+                "name_cn": "某番剧 第二季 后半",
+                "type": 2,
+            },
+        }
+        episodes = {
+            100: _make_eps_by_ep(1, 12, 10000, start_sort=1),
+            200: _make_eps_by_ep(1, 12, 20000, start_sort=1),
+            210: _make_eps_by_ep(1, 12, 21000, start_sort=1),
+        }
+        api = build_api_with_chain(
+            subjects, episodes, sequel_chain=[200, 210], prequel_chain=[]
+        )
+        result = api.find_episode_across_seasons(100, 20, target_season=2)
+        assert result is not None
+        assert result[0] == 210
+        # 第二 cour 内 local_ep = 20 - 12 = 8
+        assert result[1] == 21007
+
+    def test_season_not_in_chain_overall_none(self):
+        """边缘：目标季不在链内且全局 sort 也找不到时，整体返回 None（不崩溃）。"""
+        subjects = {100: {"name": "某番剧", "name_cn": "某番剧", "type": 2}}
+        episodes = {100: _make_eps_by_ep(1, 10, 10000, start_sort=1)}
+        api = build_api_with_chain(
+            subjects, episodes, sequel_chain=[], prequel_chain=[]
+        )
+        result = api.find_episode_across_seasons(100, 13, target_season=4)
+        assert result is None
 
 
 class TestFindEpisodeFranchiseFallback:

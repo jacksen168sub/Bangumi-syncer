@@ -39,7 +39,9 @@ class CrossSeasonStep(ExecutionStepBase):
 
         try:
             chain_pick = ctx.bgm.find_episode_across_seasons(
-                ctx.subject_id, ctx.item.episode
+                ctx.subject_id,
+                ctx.item.episode,
+                target_season=ctx.item.season or 1,
             )
         except Exception:
             logger.debug(f"关联季条目链查找异常: {ctx.subject_id}", exc_info=True)
