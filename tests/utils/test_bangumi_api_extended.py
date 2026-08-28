@@ -4,7 +4,6 @@ Bangumi API 完整测试
 
 from __future__ import annotations
 
-from typing import Optional
 from unittest.mock import MagicMock
 
 from app.utils.bangumi_api import BangumiApi
@@ -692,7 +691,7 @@ class TestFindEpisodeAcrossSeasons:
     def _make_api(
         episodes: dict,
         related: dict,
-        subject_info: Optional[dict] = None,
+        subject_info: dict | None = None,
     ):
         """构造一个 mock 好的 BangumiApi 实例。
 
@@ -842,9 +841,9 @@ class TestFindEpisodeAcrossSeasons:
     def _make_api_with_archive(
         episodes: dict,
         related: dict,
-        sequel_chain: Optional[list[int]],
+        sequel_chain: list[int] | None,
         archive_hit: bool = True,
-        subject_info: Optional[dict] = None,
+        subject_info: dict | None = None,
     ):
         """构造一个 mock 好的 BangumiApi 实例，并启用 archive 短路。
 
