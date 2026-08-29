@@ -1267,10 +1267,11 @@ class TestExtractExplicitSeason:
 
 
 class TestExtractSeasonNumber:
-    """_extract_season_number 委托 extract_explicit_season 后的行为
+    """_extract_season_number：从条目名与中文名中提取季编号
 
-    此前该方法在 episodes.py 内联了一份正则，缺少「Season X」规则，与共享函数对
-    同一标题会给出不同结果。委托后两者应始终一致。
+    覆盖四种明确声明形式：「第 X 季 / 第 X 期」（阿拉伯数字与中文数字）、
+    「Xnd/Xrd/Xth season」、「Season X」。条目名与中文名合并后解析；两者均不含
+    季声明时返回 None（可能是第一季本体，也可能是总集篇）。
     """
 
     @staticmethod
