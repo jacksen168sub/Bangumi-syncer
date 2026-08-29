@@ -929,3 +929,81 @@ class TestBackgroundIndexBuildOnStartup:
         # reload_config 后再次触发（build_in_background 内部有就绪检查，不会重复构建）
         archive.reload_config()
         assert mock_build.call_count == 2
+
+
+class TestArchiveEpisodeEpField:
+    """ArchiveStore.get_episodes 应在数据边界补全季内话数 ep 字段
+
+    Archive 按全局连续 sort 存储（如第二期 sort 13..24），不提供 API 中的季内集编号 ep。
+    下游匹配层（episodes.py 的 _match_target_ep_rows / 连续编号季边界检测）依赖 ep 作为
+    季内话数，因此必须在 get_episodes 返回前补全。
+    """
+
+    @pytest.fixture
+    def store_with_episodes(self, tmp_path: Path) -> ArchiveStore:
+        # subject 517106 = 逃げ上手の若君 第二期，全局连续 sort 13..24（type=0），外传 SP sort=25（type=3）
+        db_path = tmp_path / "ep_synth.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE episode ("
+            "id INTEGER, name TEXT, name_cn TEXT, description TEXT, "
+            "airdate TEXT, disc INTEGER, duration INTEGER, "
+            "subject_id INTEGER, sort INTEGER, type INTEGER)"
+        )
+        rows = [
+            (13, "EP1", "", "", "2025-01-01", 0, 0, 517106, 13, 0),
+            (14, "EP2", "", "", "2025-01-08", 0, 0, 517106, 14, 0),
+            (15, "EP3", "", "", "2025-01-15", 0, 0, 517106, 15, 0),
+            (16, "EP4", "", "", "2025-01-22", 0, 0, 517106, 16, 0),
+            (17, "EP5", "", "", "2025-01-29", 0, 0, 517106, 17, 0),
+            (18, "EP6", "", "", "2025-02-05", 0, 0, 517106, 18, 0),
+            (19, "EP7", "", "", "2025-02-12", 0, 0, 517106, 19, 0),
+            (20, "EP8", "", "", "2025-02-19", 0, 0, 517106, 20, 0),
+            (21, "EP9", "", "", "2025-02-26", 0, 0, 517106, 21, 0),
+            (22, "EP10", "", "", "2025-03-05", 0, 0, 517106, 22, 0),
+            (23, "EP11", "", "", "2025-03-12", 0, 0, 517106, 23, 0),
+            (24, "EP12", "", "", "2025-03-19", 0, 0, 517106, 24, 0),
+            (25, "SP", "", "", "2025-03-26", 0, 0, 517106, 25, 3),
+        ]
+        conn.executemany(
+            "INSERT INTO episode (id,name,name_cn,description,airdate,disc,"
+            "duration,subject_id,sort,type) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+
+        from app.utils.bangumi_archive import _archive
+
+        orig_db_a = _archive.bangumi_archive.db_a_path
+        orig_active = _archive.bangumi_archive._meta.active
+        _archive.bangumi_archive.db_a_path = db_path
+        _archive.bangumi_archive._meta.active = "a"
+
+        store = ArchiveStore()
+        yield store
+
+        store.close()
+        _archive.bangumi_archive.db_a_path = orig_db_a
+        _archive.bangumi_archive._meta.active = orig_active
+
+    def test_ep_field_synthesized_in_sort_order(self, store_with_episodes):
+        """type=0 常规话按 sort 升序补全 1-based 季内 ep（13..24 → 1..12）"""
+        eps = store_with_episodes.get_episodes(517106)
+        type0 = [e for e in eps if e["type"] == 0]
+        assert [e["sort"] for e in type0] == list(range(13, 25))
+        assert [e["ep"] for e in type0] == list(range(1, 13))
+
+    def test_ep_field_absent_for_non_type0(self, store_with_episodes):
+        """非 type=0（如外传 SP）不补全 ep 字段"""
+        eps = store_with_episodes.get_episodes(517106)
+        sp = [e for e in eps if e["type"] == 3]
+        assert len(sp) == 1
+        assert "ep" not in sp[0]
+
+    def test_ep_field_with_type_filter(self, store_with_episodes):
+        """episode_type=0 过滤时同样补全 ep"""
+        eps = store_with_episodes.get_episodes(517106, episode_type=0)
+        assert len(eps) == 12
+        assert all(e.get("ep") for e in eps)
+        assert [e["ep"] for e in eps] == list(range(1, 13))

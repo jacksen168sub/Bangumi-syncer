@@ -215,7 +215,9 @@ class ArchiveStore:
                 params.append(episode_type)
             sql += " ORDER BY sort"
             rows = conn.execute(sql, params).fetchall()
-            return [self._adapt_episode_row(dict(r)) for r in rows]
+            episodes = [dict(r) for r in rows]
+            self._synthesize_ep_field(episodes)
+            return [self._adapt_episode_row(e) for e in episodes]
         except sqlite3.Error as e:
             logger.warning(f"bangumi_archive get_episodes 失败: {e}")
             return []
@@ -627,6 +629,21 @@ class ArchiveStore:
         Archive 的字段名与 API 一致，仅 airdate 对应 API 的 airdate。
         """
         return row
+
+    @staticmethod
+    def _synthesize_ep_field(episodes: list[dict[str, Any]]) -> None:
+        """为 Archive episode 补全季内话数 ep 字段
+
+        Archive 按全局连续 sort 存储，不提供 API 中的季内集编号 ep。
+        下游匹配层（episodes.py）以 ep 作为季内话数，需在数据边界处补全：
+        取 type=0 的常规话，按 sort 升序给出 1-based 季内位置作为 ep。
+        """
+        type0_sorted = sorted(
+            (e for e in episodes if e.get("type", 0) == 0),
+            key=lambda e: e.get("sort", 0),
+        )
+        for i, e in enumerate(type0_sorted, start=1):
+            e["ep"] = i
 
     @staticmethod
     def _adapt_relation_row(row: dict[str, Any]) -> dict[str, Any]:
