@@ -21,7 +21,6 @@ from ...utils.bangumi_constants import (
     SUBJECT_TYPE_REAL,
 )
 from ...utils.season_title import extract_explicit_season
-from ...utils.text_constants import CN_NUM
 
 # 关联类型中文名（由 ID 常量推导，避免硬编码字符串）
 _RELATION_CN_SEQUEL = RELATIONS[RELATION_ID_SEQUEL]
@@ -397,26 +396,7 @@ class EpisodesMixin:
 
     def _extract_season_number(self, name: str, name_cn: str) -> int | None:
         """从名称中提取季度编号，用于续集链季度去重计数"""
-        text = f"{name} {name_cn}"
-        # "第X期" / "第X季"（阿拉伯数字）
-        m = re.search(r"第\s*(\d+)\s*[期季]", text)
-        if m:
-            return int(m.group(1))
-        # "第X期" / "第X季"（中文数字）
-        m = re.search(r"第\s*([一二三四五六七八九十]+)\s*[期季]", text)
-        if m:
-            cn = m.group(1)
-            if len(cn) == 1:
-                return CN_NUM.get(cn)
-            # "十一"~"十九"
-            if cn.startswith("十"):
-                return 10 + CN_NUM.get(cn[1], 0)
-            return CN_NUM.get(cn)
-        # "Xnd/Xrd/Xth season"
-        m = re.search(r"(\d+)(?:st|nd|rd|th)\s+season", text, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-        return None
+        return extract_explicit_season(f"{name} {name_cn}")
 
     def _match_target_ep_rows(
         self, ep_info: list, target_ep: int

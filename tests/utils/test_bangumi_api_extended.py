@@ -1266,6 +1266,50 @@ class TestExtractExplicitSeason:
         assert extract_explicit_season("") is None
 
 
+class TestExtractSeasonNumber:
+    """_extract_season_number 委托 extract_explicit_season 后的行为
+
+    此前该方法在 episodes.py 内联了一份正则，缺少「Season X」规则，与共享函数对
+    同一标题会给出不同结果。委托后两者应始终一致。
+    """
+
+    @staticmethod
+    def _api() -> BangumiApi:
+        return BangumiApi()
+
+    def test_english_season_keyword_supported(self):
+        api = self._api()
+        assert api._extract_season_number("Attack on Titan Season 4", "") == 4
+        assert api._extract_season_number("Anime Season 3", "") == 3
+
+    def test_name_cn_merged_with_name(self):
+        api = self._api()
+        assert api._extract_season_number("某番剧", "某番剧 第二季") == 2
+        assert (
+            api._extract_season_number("Re：从零开始的异世界生活 第四季 夺还篇", "")
+            == 4
+        )
+
+    def test_no_season_declaration_returns_none(self):
+        api = self._api()
+        assert api._extract_season_number("虫师 续章", "") is None
+        assert api._extract_season_number("", "") is None
+
+    def test_consistent_with_shared_helper(self):
+        """与 extract_explicit_season 对同一输入结果一致"""
+        api = self._api()
+        for name, name_cn in [
+            ("Attack on Titan Season 4", ""),
+            ("Anime 2nd season", ""),
+            ("某番剧 第十一季", ""),
+            ("进击の巨人 第四期", ""),
+            ("凡人修仙传", ""),
+        ]:
+            assert api._extract_season_number(name, name_cn) == extract_explicit_season(
+                f"{name} {name_cn}"
+            )
+
+
 class TestFindEpisodeAcrossSeasonsBySeason:
     """find_episode_across_seasons 季定位分支：Re:Zero 多 cour 跨季场景。"""
 
