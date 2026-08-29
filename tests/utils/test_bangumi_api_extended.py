@@ -1370,7 +1370,7 @@ class TestFindEpisodeAcrossSeasonsBySeason:
         )
 
     def test_rezero_s04e13_resolves_to_season4_cour2(self):
-        """分支结果：S04E13 应定位到第四季第二 cour 的 ep2（id 1656859），而非 S1E13。"""
+        """显式传入 target_season=4 时，S04E13 定位到第四季第二 cour 的 ep2（id 1656859）。"""
         api = self._rezero_api()
         result = api.find_episode_across_seasons(140001, 13, target_season=4)
         assert result is not None
@@ -1378,10 +1378,9 @@ class TestFindEpisodeAcrossSeasonsBySeason:
         assert result[1] == 1656859
 
     def test_rezero_s04e13_without_season_falls_back_to_global_sort(self):
-        """上游结果：未传入季编号时回退全局 sort，S04E13 命中 S1E13（id 626044）。
+        """未传入季编号（target_season 取默认值 1）时按全局 sort 解析，S04E13 命中 sort=13 的第一季 ep13（id 626044）。
 
-        这正是 bug 触发路径——证明修复仅在调用方传入季编号时生效，
-        未传季编号时保持既有（有误）行为不变。
+        季定位仅在 target_season>1 时启用，故不传季编号的请求仍走全局 sort。
         """
         api = self._rezero_api()
         result = api.find_episode_across_seasons(140001, 13)
@@ -1406,7 +1405,7 @@ class TestFindEpisodeAcrossSeasonsBySeason:
         assert result == (140001, 626044)
 
     def test_single_subject_season1_uses_global_sort_unchanged(self):
-        """常规/零回归：单 subject 季=1 走全局 sort 原路径，结果不变。"""
+        """常规：单 subject、季=1 的请求按全局 sort 解析，命中 sort 对应的章节。"""
         subjects = {100: {"name": "某番剧", "name_cn": "某番剧", "type": 2}}
         episodes = {100: _make_eps_by_ep(1, 13, 10000, start_sort=1)}
         api = build_api_with_chain(

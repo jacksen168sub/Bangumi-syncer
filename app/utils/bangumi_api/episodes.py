@@ -749,7 +749,7 @@ class EpisodesMixin:
         集号在目标季内解析，从而命中用户所指的具体季与集。
 
         无法在关联链上确定目标季，或目标季内找不到对应集时返回 None，
-        交由本方法的全局 sort 回退逻辑处理（保持既有行为不变）。
+        由调用方回退到全局 sort 匹配。
         """
         chain = self._collect_related_subjects(subject_id, max_depth, deadline)
         if not chain:
