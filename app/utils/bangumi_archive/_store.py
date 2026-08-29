@@ -640,7 +640,7 @@ class ArchiveStore:
         """
         type0_sorted = sorted(
             (e for e in episodes if e.get("type", 0) == 0),
-            key=lambda e: e.get("sort", 0),
+            key=lambda e: e.get("sort") or 0,
         )
         for i, e in enumerate(type0_sorted, start=1):
             e["ep"] = i

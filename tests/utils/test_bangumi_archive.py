@@ -931,6 +931,67 @@ class TestBackgroundIndexBuildOnStartup:
         assert mock_build.call_count == 2
 
 
+# subject 517106 = 逃げ上手の若君 第二期：全局连续 sort 13..24（type=0），外传 SP sort=25（type=3）
+_SEASON2_ROWS = [
+    (13, "EP1", "", "", "2025-01-01", 0, 0, 517106, 13, 0),
+    (14, "EP2", "", "", "2025-01-08", 0, 0, 517106, 14, 0),
+    (15, "EP3", "", "", "2025-01-15", 0, 0, 517106, 15, 0),
+    (16, "EP4", "", "", "2025-01-22", 0, 0, 517106, 16, 0),
+    (17, "EP5", "", "", "2025-01-29", 0, 0, 517106, 17, 0),
+    (18, "EP6", "", "", "2025-02-05", 0, 0, 517106, 18, 0),
+    (19, "EP7", "", "", "2025-02-12", 0, 0, 517106, 19, 0),
+    (20, "EP8", "", "", "2025-02-19", 0, 0, 517106, 20, 0),
+    (21, "EP9", "", "", "2025-02-26", 0, 0, 517106, 21, 0),
+    (22, "EP10", "", "", "2025-03-05", 0, 0, 517106, 22, 0),
+    (23, "EP11", "", "", "2025-03-12", 0, 0, 517106, 23, 0),
+    (24, "EP12", "", "", "2025-03-19", 0, 0, 517106, 24, 0),
+    (25, "SP", "", "", "2025-03-26", 0, 0, 517106, 25, 3),
+]
+
+# subject 900001：首话 sort 为 NULL，用于覆盖排序键取到 None 的场景
+_NULL_SORT_ROWS = [
+    (701, "EP1", "", "", "2025-01-01", 0, 0, 900001, None, 0),
+    (702, "EP2", "", "", "2025-01-08", 0, 0, 900001, 5, 0),
+    (703, "EP3", "", "", "2025-01-15", 0, 0, 900001, 6, 0),
+]
+
+
+def _archive_store(tmp_path: Path, rows: list[tuple], db_name: str):
+    """用给定 episode 行建立临时 Archive 库，挂到全局单例并提供就绪的 ArchiveStore
+
+    表结构与 Archive dump 一致（不含 ep 列）。teardown 时关闭连接并恢复全局单例状态。
+    """
+    db_path = tmp_path / db_name
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE episode ("
+        "id INTEGER, name TEXT, name_cn TEXT, description TEXT, "
+        "airdate TEXT, disc INTEGER, duration INTEGER, "
+        "subject_id INTEGER, sort INTEGER, type INTEGER)"
+    )
+    conn.executemany(
+        "INSERT INTO episode (id,name,name_cn,description,airdate,disc,"
+        "duration,subject_id,sort,type) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    from app.utils.bangumi_archive import _archive
+
+    orig_db_a = _archive.bangumi_archive.db_a_path
+    orig_active = _archive.bangumi_archive._meta.active
+    _archive.bangumi_archive.db_a_path = db_path
+    _archive.bangumi_archive._meta.active = "a"
+
+    store = ArchiveStore()
+    yield store
+
+    store.close()
+    _archive.bangumi_archive.db_a_path = orig_db_a
+    _archive.bangumi_archive._meta.active = orig_active
+
+
 class TestArchiveEpisodeEpField:
     """ArchiveStore.get_episodes 应在数据边界补全季内话数 ep 字段
 
@@ -941,51 +1002,11 @@ class TestArchiveEpisodeEpField:
 
     @pytest.fixture
     def store_with_episodes(self, tmp_path: Path) -> ArchiveStore:
-        # subject 517106 = 逃げ上手の若君 第二期，全局连续 sort 13..24（type=0），外传 SP sort=25（type=3）
-        db_path = tmp_path / "ep_synth.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "CREATE TABLE episode ("
-            "id INTEGER, name TEXT, name_cn TEXT, description TEXT, "
-            "airdate TEXT, disc INTEGER, duration INTEGER, "
-            "subject_id INTEGER, sort INTEGER, type INTEGER)"
-        )
-        rows = [
-            (13, "EP1", "", "", "2025-01-01", 0, 0, 517106, 13, 0),
-            (14, "EP2", "", "", "2025-01-08", 0, 0, 517106, 14, 0),
-            (15, "EP3", "", "", "2025-01-15", 0, 0, 517106, 15, 0),
-            (16, "EP4", "", "", "2025-01-22", 0, 0, 517106, 16, 0),
-            (17, "EP5", "", "", "2025-01-29", 0, 0, 517106, 17, 0),
-            (18, "EP6", "", "", "2025-02-05", 0, 0, 517106, 18, 0),
-            (19, "EP7", "", "", "2025-02-12", 0, 0, 517106, 19, 0),
-            (20, "EP8", "", "", "2025-02-19", 0, 0, 517106, 20, 0),
-            (21, "EP9", "", "", "2025-02-26", 0, 0, 517106, 21, 0),
-            (22, "EP10", "", "", "2025-03-05", 0, 0, 517106, 22, 0),
-            (23, "EP11", "", "", "2025-03-12", 0, 0, 517106, 23, 0),
-            (24, "EP12", "", "", "2025-03-19", 0, 0, 517106, 24, 0),
-            (25, "SP", "", "", "2025-03-26", 0, 0, 517106, 25, 3),
-        ]
-        conn.executemany(
-            "INSERT INTO episode (id,name,name_cn,description,airdate,disc,"
-            "duration,subject_id,sort,type) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            rows,
-        )
-        conn.commit()
-        conn.close()
+        yield from _archive_store(tmp_path, _SEASON2_ROWS, "ep_synth.db")
 
-        from app.utils.bangumi_archive import _archive
-
-        orig_db_a = _archive.bangumi_archive.db_a_path
-        orig_active = _archive.bangumi_archive._meta.active
-        _archive.bangumi_archive.db_a_path = db_path
-        _archive.bangumi_archive._meta.active = "a"
-
-        store = ArchiveStore()
-        yield store
-
-        store.close()
-        _archive.bangumi_archive.db_a_path = orig_db_a
-        _archive.bangumi_archive._meta.active = orig_active
+    @pytest.fixture
+    def store_with_null_sort(self, tmp_path: Path) -> ArchiveStore:
+        yield from _archive_store(tmp_path, _NULL_SORT_ROWS, "null_sort.db")
 
     def test_ep_field_synthesized_in_sort_order(self, store_with_episodes):
         """type=0 常规话按 sort 升序补全 1-based 季内 ep（13..24 → 1..12）"""
@@ -1007,3 +1028,9 @@ class TestArchiveEpisodeEpField:
         assert len(eps) == 12
         assert all(e.get("ep") for e in eps)
         assert [e["ep"] for e in eps] == list(range(1, 13))
+
+    def test_ep_field_synthesized_when_sort_is_null(self, store_with_null_sort):
+        """sort 为 NULL 的章节不得使补全抛异常，常规话照常补全 ep"""
+        eps = store_with_null_sort.get_episodes(900001)
+        assert len(eps) == 3
+        assert [e["ep"] for e in eps] == [1, 2, 3]
