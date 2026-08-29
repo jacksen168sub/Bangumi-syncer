@@ -1026,6 +1026,20 @@ class TestArchiveEpisodeEpField:
     def store_with_sort_reset(self, tmp_path: Path) -> ArchiveStore:
         yield from _archive_store(tmp_path, _SORT_RESET_ROWS, "sort_reset.db")
 
+    @pytest.fixture
+    def store_empty(self, tmp_path: Path) -> ArchiveStore:
+        yield from _archive_store(tmp_path, [], "empty.db")
+
+    @pytest.fixture
+    def store_only_sp(self, tmp_path: Path) -> ArchiveStore:
+        rows = [(501, "SP", "", "", "2025-01-01", 0, 0, 900003, 1, 3)]
+        yield from _archive_store(tmp_path, rows, "only_sp.db")
+
+    @pytest.fixture
+    def store_single_episode(self, tmp_path: Path) -> ArchiveStore:
+        rows = [(601, "EP1", "", "", "2025-01-01", 0, 0, 900004, 7, 0)]
+        yield from _archive_store(tmp_path, rows, "single.db")
+
     def test_ep_field_synthesized_in_sort_order(self, store_with_episodes):
         """type=0 常规话按 sort 升序补全 1-based 季内 ep（13..24 → 1..12）"""
         eps = store_with_episodes.get_episodes(517106)
@@ -1058,3 +1072,19 @@ class TestArchiveEpisodeEpField:
         eps = store_with_sort_reset.get_episodes(900002)
         assert len(eps) == 10
         assert all("ep" not in e for e in eps)
+
+    def test_ep_field_empty_subject_no_error(self, store_empty):
+        """无章节的条目返回空列表，不补全也不报错"""
+        assert store_empty.get_episodes(900003) == []
+
+    def test_ep_field_only_non_type0_no_ep(self, store_only_sp):
+        """条目内只有非本篇章节时不补全 ep"""
+        eps = store_only_sp.get_episodes(900003)
+        assert len(eps) == 1
+        assert "ep" not in eps[0]
+
+    def test_ep_field_single_episode_is_one(self, store_single_episode):
+        """单集条目的季内话数为 1"""
+        eps = store_single_episode.get_episodes(900004)
+        assert len(eps) == 1
+        assert eps[0]["ep"] == 1
