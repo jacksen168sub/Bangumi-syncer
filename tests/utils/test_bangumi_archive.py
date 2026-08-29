@@ -955,6 +955,20 @@ _NULL_SORT_ROWS = [
     (703, "EP3", "", "", "2025-01-15", 0, 0, 900001, 6, 0),
 ]
 
+# subject 900002：多季合并到同一条目，sort 每季重置为 1（S1 ids 301-305，S2 ids 306-310）
+_SORT_RESET_ROWS = [
+    (301, "EP1", "", "", "2025-01-01", 0, 0, 900002, 1, 0),
+    (302, "EP2", "", "", "2025-01-08", 0, 0, 900002, 2, 0),
+    (303, "EP3", "", "", "2025-01-15", 0, 0, 900002, 3, 0),
+    (304, "EP4", "", "", "2025-01-22", 0, 0, 900002, 4, 0),
+    (305, "EP5", "", "", "2025-01-29", 0, 0, 900002, 5, 0),
+    (306, "EP1", "", "", "2025-02-05", 0, 0, 900002, 1, 0),
+    (307, "EP2", "", "", "2025-02-12", 0, 0, 900002, 2, 0),
+    (308, "EP3", "", "", "2025-02-19", 0, 0, 900002, 3, 0),
+    (309, "EP4", "", "", "2025-02-26", 0, 0, 900002, 4, 0),
+    (310, "EP5", "", "", "2025-03-05", 0, 0, 900002, 5, 0),
+]
+
 
 def _archive_store(tmp_path: Path, rows: list[tuple], db_name: str):
     """用给定 episode 行建立临时 Archive 库，挂到全局单例并提供就绪的 ArchiveStore
@@ -1008,6 +1022,10 @@ class TestArchiveEpisodeEpField:
     def store_with_null_sort(self, tmp_path: Path) -> ArchiveStore:
         yield from _archive_store(tmp_path, _NULL_SORT_ROWS, "null_sort.db")
 
+    @pytest.fixture
+    def store_with_sort_reset(self, tmp_path: Path) -> ArchiveStore:
+        yield from _archive_store(tmp_path, _SORT_RESET_ROWS, "sort_reset.db")
+
     def test_ep_field_synthesized_in_sort_order(self, store_with_episodes):
         """type=0 常规话按 sort 升序补全 1-based 季内 ep（13..24 → 1..12）"""
         eps = store_with_episodes.get_episodes(517106)
@@ -1034,3 +1052,9 @@ class TestArchiveEpisodeEpField:
         eps = store_with_null_sort.get_episodes(900001)
         assert len(eps) == 3
         assert [e["ep"] for e in eps] == [1, 2, 3]
+
+    def test_ep_field_absent_when_sort_resets(self, store_with_sort_reset):
+        """多季合并条目（sort 每季重置为 1）不补全 ep，季边界交由下游 sort 重置检测"""
+        eps = store_with_sort_reset.get_episodes(900002)
+        assert len(eps) == 10
+        assert all("ep" not in e for e in eps)

@@ -1054,6 +1054,38 @@ class TestGetTargetSeasonEpisodeId:
         conn.close()
         return db_path
 
+    @pytest.fixture
+    def archive_sort_reset_db(self, tmp_path):
+        """构建 subject 900002 的 Archive 库：多季合并条目，sort 每季重置为 1"""
+        db_path = tmp_path / "archive_sort_reset.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE episode ("
+            "id INTEGER, name TEXT, name_cn TEXT, description TEXT, "
+            "airdate TEXT, disc INTEGER, duration INTEGER, "
+            "subject_id INTEGER, sort INTEGER, type INTEGER)"
+        )
+        rows = [
+            (301, "EP1", "", "", "2025-01-01", 0, 0, 900002, 1, 0),
+            (302, "EP2", "", "", "2025-01-08", 0, 0, 900002, 2, 0),
+            (303, "EP3", "", "", "2025-01-15", 0, 0, 900002, 3, 0),
+            (304, "EP4", "", "", "2025-01-22", 0, 0, 900002, 4, 0),
+            (305, "EP5", "", "", "2025-01-29", 0, 0, 900002, 5, 0),
+            (306, "EP1", "", "", "2025-02-05", 0, 0, 900002, 1, 0),
+            (307, "EP2", "", "", "2025-02-12", 0, 0, 900002, 2, 0),
+            (308, "EP3", "", "", "2025-02-19", 0, 0, 900002, 3, 0),
+            (309, "EP4", "", "", "2025-02-26", 0, 0, 900002, 4, 0),
+            (310, "EP5", "", "", "2025-03-05", 0, 0, 900002, 5, 0),
+        ]
+        conn.executemany(
+            "INSERT INTO episode (id,name,name_cn,description,airdate,disc,"
+            "duration,subject_id,sort,type) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
     def _enable_archive_with_db(self, api, db_path):
         from app.utils.bangumi_archive import _archive as _arch_mod
 
@@ -1127,6 +1159,28 @@ class TestGetTargetSeasonEpisodeId:
                 )
             assert subject_id == "517106"
             assert episode_id == 13
+        finally:
+            self._restore_archive(api, orig)
+
+    def test_sort_reset_subject_uses_sort_jump_detection(self, archive_sort_reset_db):
+        """多季合并条目（sort 每季重置为 1）不补全 ep，季边界仍由 sort 重置检测定位
+
+        Archive 缺 ep 时上游依赖 sort 由高值跳回 1 判定新季。补全 ep 不得使该检测
+        失效，否则同一条目内的第 2 季将无法定位。
+        """
+        api = BangumiApi()
+        orig = self._enable_archive_with_db(api, archive_sort_reset_db)
+        try:
+            with (
+                patch.object(
+                    api,
+                    "get_subject",
+                    return_value={"id": 900002, "type": 2, "name": "多季合并条目"},
+                ),
+                patch.object(api, "get_related_subjects", return_value=[]),
+            ):
+                result = api._try_resolve_continuous_season_episode(900002, 2, 3)
+            assert result == (900002, 308)
         finally:
             self._restore_archive(api, orig)
 

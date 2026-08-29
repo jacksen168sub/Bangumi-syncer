@@ -637,12 +637,21 @@ class ArchiveStore:
         Archive 按全局连续 sort 存储，不提供 API 中的季内集编号 ep。
         下游匹配层（episodes.py）以 ep 作为季内话数，需在数据边界处补全：
         取 type=0 的常规话，按 sort 升序给出 1-based 季内位置作为 ep。
+
+        同一 subject 内 sort 每季重置为 1 时（多季合并到同一条目），季边界无法由
+        sort 推得，此时不补全，交由下游既有的 sort 重置检测定位季边界。
         """
-        type0_sorted = sorted(
-            (e for e in episodes if e.get("type", 0) == 0),
-            key=lambda e: e.get("sort") or 0,
-        )
-        for i, e in enumerate(type0_sorted, start=1):
+        type0 = [e for e in episodes if e.get("type", 0) == 0]
+
+        # 按 id 升序遍历（反映章节录入顺序），sort 由大于 1 跳回 1 即为新季起点
+        prev_sort = None
+        for e in sorted(type0, key=lambda e: e.get("id") or 0):
+            sort_num = e.get("sort") or 0
+            if prev_sort is not None and sort_num == 1 and prev_sort > 1:
+                return
+            prev_sort = sort_num
+
+        for i, e in enumerate(sorted(type0, key=lambda e: e.get("sort") or 0), start=1):
             e["ep"] = i
 
     @staticmethod
