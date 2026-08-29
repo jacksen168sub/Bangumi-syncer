@@ -639,7 +639,8 @@ class ArchiveStore:
         取 type=0 的常规话，按 sort 升序给出 1-based 季内位置作为 ep。
 
         同一 subject 内 sort 每季重置为 1 时（多季合并到同一条目），季边界无法由
-        sort 推得，此时不补全，交由下游既有的 sort 重置检测定位季边界。
+        sort 推得，此时不补全，交由下游 episodes.py 依据 sort 重置（大于 1 跳回 1
+        判定新季起点）定位季边界。
         """
         type0 = [e for e in episodes if e.get("type", 0) == 0]
 
