@@ -646,8 +646,9 @@ class EpisodesMixin:
             subject_id: 已命中的初始条目 id
             target_ep: 目标集数（季内集编号，对应 ep.ep；target_season<=1 时回退为全局 sort）
             max_depth: 沿单方向最多遍历多少个关联条目，防极端环
-            target_season: 目标季编号；大于 1 时优先按季在关联链上定位目标条目，
-                再按集解析，避免命中错误季
+            target_season: 目标季编号；大于 1 时 target_ep 按季内集编号在关联链上
+                定位目标季后解析。季定位未命中时不回退全局 sort，除非该编号超出
+                目标季总集数（可判定调用方给出的是跨季连续编号）
 
         Returns:
             (subject_id, episode_id) 或 None
@@ -665,12 +666,18 @@ class EpisodesMixin:
         # 季定位优先：明确指定季时，先按季在关联链上定位目标条目，再按集解析，
         # 避免仅凭全局 sort 命中错误季（例如第 4 季第 13 集误命中第 1 季第 13 集）。
         if target_season and target_season > 1:
-            season_pick = self._resolve_by_season_chain(
+            season_pick, beyond_season_total = self._resolve_by_season_chain(
                 subject_id, target_season, target_ep, max_depth, deadline
             )
             if season_pick:
                 self.last_cross_season_path = "chain"
                 return season_pick
+            # target_season>1 时 target_ep 是季内集编号。目标季未定位、或该季章节
+            # 无法按 ep 解析时回退全局 sort，会把季内编号当作全局序号命中错误季
+            # （第 4 季第 13 集命中第 1 季第 13 集）；仅当编号超出目标季总集数、
+            # 可判定为跨季连续编号时才回退。
+            if not beyond_season_total:
+                return None
 
         # 先在当前 subject 内查
         found = self._find_episode_by_sort(subject_id, target_ep)
@@ -741,19 +748,24 @@ class EpisodesMixin:
         target_ep: int,
         max_depth: int,
         deadline: float | None = None,
-    ) -> tuple[int, int] | None:
-        """按季在关联链上定位目标条目并解析集数。
+    ) -> tuple[tuple[int, int] | None, bool]:
+        """按季在关联链上定位目标条目并解析季内集编号。
 
         调用方明确提供季编号（target_season>1）时，依据各条目标题中的季声明在
         整条前传/续集链上定位目标季的条目（分篇 cours 视为同一季的连续段），再按
-        集号在目标季内解析，从而命中用户所指的具体季与集。
+        累计集数把 target_ep 解析为目标季内的具体章节。
 
-        无法在关联链上确定目标季，或目标季内找不到对应集时返回 None，
-        由调用方回退到全局 sort 匹配。
+        Returns:
+            (命中结果, target_ep 是否超出目标季总集数)
+            - 命中结果非 None 时为 (subject_id, episode_id)
+            - 命中为 None 且未超范围：目标季不在关联链上，或该季章节缺少 ep 字段，
+              无法按季内编号解析
+            - 命中为 None 且超出范围：目标季已定位，但 target_ep 大于该季总集数，
+              说明调用方给出的是跨季连续编号而非季内编号
         """
         chain = self._collect_related_subjects(subject_id, max_depth, deadline)
         if not chain:
-            return None
+            return None, False
 
         # 收集关联链上每个条目的季编号与正片章节，按链序排列
         season_buckets: list[tuple[int | None, int, list[dict]]] = []
@@ -766,9 +778,9 @@ class EpisodesMixin:
             subject_type = info.get("type")
             if subject_type is not None and subject_type != SUBJECT_TYPE_ANIME:
                 continue
-            season = extract_explicit_season(
-                info.get("name_cn") or ""
-            ) or extract_explicit_season(info.get("name") or "")
+            season = self._extract_season_number(
+                info.get("name") or "", info.get("name_cn") or ""
+            )
             episodes = self.get_episodes(sid, fetch_all=True).get("data") or []
             type0 = [e for e in episodes if e.get("type", 0) == 0]
             season_buckets.append((season, sid, type0))
@@ -780,7 +792,11 @@ class EpisodesMixin:
             if season == target_season
         ]
         if not targets:
-            return None
+            return None, False
+
+        # 超出目标季总集数：不是季内相对编号，交由调用方按全局 sort 解释
+        if target_ep > sum(len(eps) for _, eps in targets):
+            return None, True
 
         cumulative = 0
         for sid, eps in targets:
@@ -789,9 +805,10 @@ class EpisodesMixin:
                 local_ep = target_ep - cumulative
                 rows = [e for e in eps if e.get("ep") == local_ep]
                 if rows:
-                    return sid, rows[0]["id"]
+                    return (sid, rows[0]["id"]), False
+                break
             cumulative += count
-        return None
+        return None, False
 
     def _collect_related_subjects(
         self,

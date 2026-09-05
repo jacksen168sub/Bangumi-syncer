@@ -1207,6 +1207,14 @@ def _make_eps_by_ep(
     return eps
 
 
+def _make_eps_by_sort(start_sort: int, count: int, start_id: int):
+    """生成仅含 sort、不含 ep 字段的 episode 列表（模拟 Archive 的 episode 表）。"""
+    return [
+        {"sort": start_sort + i, "id": start_id + i, "type": 0, "airdate": ""}
+        for i in range(count)
+    ]
+
+
 def build_api_with_chain(subjects, episodes, sequel_chain, prequel_chain=None):
     """构造 mock 好的 BangumiApi，用预设关联链 + 条目/章节数据驱动季定位逻辑。
 
@@ -1415,7 +1423,7 @@ class TestFindEpisodeAcrossSeasonsBySeason:
         assert result == (100, 10004)
 
     def test_resolve_by_season_chain_returns_none_when_season_absent(self):
-        """边缘：关联链上不存在目标季时，季定位分支返回 None（交由全局 sort 处理）。"""
+        """边缘：关联链上不存在目标季时既不命中，也不判定为跨季连续编号。"""
         subjects = {
             100: {"name": "某番剧", "name_cn": "某番剧", "type": 2},
             200: {"name": "某番剧 第二季", "name_cn": "某番剧 第二季", "type": 2},
@@ -1429,12 +1437,17 @@ class TestFindEpisodeAcrossSeasonsBySeason:
         api = build_api_with_chain(
             subjects, episodes, sequel_chain=[200, 300], prequel_chain=[]
         )
-        # 关联链仅到第 3 季，要求第 4 季 → 季定位 miss
-        result = api._resolve_by_season_chain(100, 4, 13, 20)
-        assert result is None
+        # 关联链仅到第 3 季，要求第 4 季 → 目标季无法定位
+        pick, beyond_season_total = api._resolve_by_season_chain(100, 4, 13, 20)
+        assert pick is None
+        assert beyond_season_total is False
 
-    def test_season_unparseable_title_falls_back_to_global_sort(self):
-        """边缘：链上标题均无法解析季编号时，季定位 miss，回退全局 sort。"""
+    def test_season_unparseable_title_returns_none(self):
+        """边缘：链上标题均无法解析季编号时目标季无法定位，不回退全局 sort。
+
+        target_season>1 时集数是季内编号，回退全局 sort 会把它当作全局序号命中
+        第一季的同号集（第 2 季第 13 集命中第 1 季第 13 集）。
+        """
         subjects = {
             100: {"name": "某番剧", "name_cn": "某番剧", "type": 2},
             200: {"name": "某番剧 续章", "name_cn": "某番剧 续章", "type": 2},
@@ -1446,9 +1459,50 @@ class TestFindEpisodeAcrossSeasonsBySeason:
         api = build_api_with_chain(
             subjects, episodes, sequel_chain=[200], prequel_chain=[]
         )
-        # 标题无季声明，季定位无法命中，回退到 S1 的全局 sort
+        # 标题无季声明，第 2 季无法定位；不得退化为 sort=13 命中第一季
         result = api.find_episode_across_seasons(100, 13, target_season=2)
-        assert result == (100, 10012)
+        assert result is None
+
+    def test_season_located_without_ep_field_returns_none(self):
+        """边缘：目标季已定位但章节缺 ep 字段时无法按季内编号解析，不回退全局 sort。
+
+        Archive 的 episode 表只提供全局连续 sort，不含季内 ep；此时回退全局 sort
+        会把季内编号当作全局序号命中第一季同号集。
+        """
+        subjects = {
+            100: {"name": "某番剧", "name_cn": "某番剧", "type": 2},
+            200: {"name": "某番剧 第二季", "name_cn": "某番剧 第二季", "type": 2},
+        }
+        # 第二季 sort 全局连续 14..25，无 ep 字段
+        episodes = {
+            100: _make_eps_by_sort(1, 13, 10000),
+            200: _make_eps_by_sort(14, 12, 20000),
+        }
+        api = build_api_with_chain(
+            subjects, episodes, sequel_chain=[200], prequel_chain=[]
+        )
+        result = api.find_episode_across_seasons(100, 6, target_season=2)
+        assert result is None
+
+    def test_target_ep_beyond_season_total_keeps_global_sort_fallback(self):
+        """边缘：集数超出目标季总集数时按跨季连续编号处理，回退全局 sort 匹配。"""
+        subjects = {
+            100: {"name": "某番剧", "name_cn": "某番剧", "type": 2},
+            200: {"name": "某番剧 第二季", "name_cn": "某番剧 第二季", "type": 2},
+            300: {"name": "某番剧 第三季", "name_cn": "某番剧 第三季", "type": 2},
+        }
+        # sort 全局连续：第 1 季 1-10、第 2 季 11-20、第 3 季 21-30；ep 每季从 1 起
+        episodes = {
+            100: _make_eps_by_ep(1, 10, 10000, start_sort=1),
+            200: _make_eps_by_ep(1, 10, 20000, start_sort=11),
+            300: _make_eps_by_ep(1, 10, 30000, start_sort=21),
+        }
+        api = build_api_with_chain(
+            subjects, episodes, sequel_chain=[200, 300], prequel_chain=[]
+        )
+        # 第 2 季共 10 集，25 超出该范围 → 视为连续编号，回退全局 sort=25
+        result = api.find_episode_across_seasons(100, 25, target_season=2)
+        assert result == (300, 30004)
 
     def test_cross_cour_same_season_cumulative(self):
         """边缘：同季多 cour 累计定位。S2 分两 cour（各 12 集），ep=20 应落在第二 cour ep8。"""
